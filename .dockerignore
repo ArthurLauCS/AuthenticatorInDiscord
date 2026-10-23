@@ -1,0 +1,7 @@
+*
+!requirements.txt
+!authbot/
+!authbot/*.py
+!THIRD_PARTY_NOTICES.md
+!third_party/
+!third_party/gotp-LICENSE
