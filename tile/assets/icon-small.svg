@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- 小图标（16～32px）：盾牌外形 + 一道粗的倒计时弧 -->
+  <path d="M8 0.6 C9.6 1.7 11.8 2.4 14 2.6 C14.6 2.7 15 3.1 15 3.7 V7.4 C15 11.4 12 14.2 8 15.4 C4 14.2 1 11.4 1 7.4 V3.7 C1 3.1 1.4 2.7 2 2.6 C4.2 2.4 6.4 1.7 8 0.6 Z" fill="#14A394"/>
+  <path d="M8 4.4 A3.5 3.5 0 1 1 4.5 7.9" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+</svg>
