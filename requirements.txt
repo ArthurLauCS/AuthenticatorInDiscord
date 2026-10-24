@@ -1,5 +1,0 @@
-discord.py==2.7.1
-cryptography==48.0.1
-pyotp==2.10.0
-python-dotenv==1.2.4
-protobuf==7.36.2
