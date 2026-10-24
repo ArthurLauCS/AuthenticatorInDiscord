@@ -3,7 +3,7 @@
 //! 导入 Google 验证器导出的二维码图片（拖进来、选文件、Ctrl+V 粘贴截图），也认 otpauth:// 链接；已有的账号自动跳过。
 //! 数据用 DPAPI 按当前 Windows 用户加密，存在 %APPDATA%\AuthTile\vault.dat。
 //!
-//! 参数：--data <目录> 代替 %APPDATA%\AuthTile；--top 置顶；--light / --dark 强制主题；--lang zh|en 强制语言（后几个是截图走查用的）。
+//! 参数：--data <目录> 代替 %APPDATA%\AuthTile；--top 置顶；--light / --dark 强制主题；--lang zh|tw|en 强制语言（后几个是截图走查用的）。
 
 mod config;
 mod gfx;
@@ -33,7 +33,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
-use config::{Config, en, tr};
+use config::{Config, Lang, tr};
 use sys::wide;
 use view::{Fonts, Hit, Theme};
 
@@ -209,7 +209,7 @@ impl App {
             std::fs::create_dir_all(&self.data).is_ok() && std::fs::write(&tmp, enc).is_ok() && std::fs::rename(&tmp, self.vault_path()).is_ok()
         });
         if !ok {
-            self.set_note(tr("保存失败，改动在重启后会丢失", "Could not save; changes will be lost on restart").into(), true);
+            self.set_note(tr("保存失败，改动在重启后会丢失", "儲存失敗，變更在重新啟動後會遺失", "Could not save; changes will be lost on restart").into(), true);
         }
     }
 
@@ -341,7 +341,7 @@ impl App {
     }
 
     fn import_dialog(&mut self) {
-        let files = sys::open_images(self.hwnd, tr("选择验证器导出的二维码图片", "Choose exported QR code images"), tr("图片", "Images"));
+        let files = sys::open_images(self.hwnd, tr("选择验证器导出的二维码图片", "選擇驗證器匯出的 QR 碼圖片", "Choose exported QR code images"), tr("图片", "圖片", "Images"));
         if !files.is_empty() {
             self.start_scan(Src::Files(files));
         }
@@ -352,7 +352,7 @@ impl App {
             sys::Clip::Image(b) => self.start_scan(Src::Image(b)),
             sys::Clip::Files(f) => self.start_scan(Src::Files(f)),
             sys::Clip::Text(t) => self.start_scan(Src::Text(t)),
-            sys::Clip::None => self.set_note(tr("剪贴板里没有图片", "No image on the clipboard").into(), true),
+            sys::Clip::None => self.set_note(tr("剪贴板里没有图片", "剪貼簿裡沒有圖片", "No image on the clipboard").into(), true),
         }
     }
 
@@ -361,7 +361,7 @@ impl App {
         if self.locked {
             return;
         }
-        self.set_note(tr("正在识别二维码…", "Reading QR codes…").into(), false);
+        self.set_note(tr("正在识别二维码…", "正在辨識 QR 碼…", "Reading QR codes…").into(), false);
         let (tx, hw) = (self.tx.clone(), self.hwnd.0 as usize);
         std::thread::spawn(move || {
             let _ = tx.send(scan(src));
@@ -374,18 +374,18 @@ impl App {
     fn on_scan(&mut self, s: Scan) {
         let Some((added, dup, unsupported)) = self.vault.import_uris(&s.uris) else {
             let msg = match (s.uris.is_empty(), s.bad > 0) {
-                (true, true) => tr("图片打不开，请用 PNG、JPG、WebP 或 BMP", "Can't open the image; use PNG, JPG, WebP or BMP"),
-                (true, false) => tr("没有识别到二维码，请截得清晰、完整一些", "No QR code found; try a sharper, complete shot"),
-                (false, _) => tr("这不是验证器的二维码", "Not an authenticator QR code"),
+                (true, true) => tr("图片打不开，请用 PNG、JPG、WebP 或 BMP", "無法開啟圖片，請使用 PNG、JPG、WebP 或 BMP", "Can't open the image; use PNG, JPG, WebP or BMP"),
+                (true, false) => tr("没有识别到二维码，请截得清晰、完整一些", "沒有辨識到 QR 碼，請擷取清晰、完整的畫面", "No QR code found; try a sharper, complete shot"),
+                (false, _) => tr("这不是验证器的二维码", "這不是驗證器的 QR 碼", "Not an authenticator QR code"),
             };
             return self.set_note(msg.into(), true);
         };
         if added > 0 {
             self.save_vault();
         }
-        let mut msg = if en() { format!("Imported {added}, {dup} already here") } else { format!("导入 {added} 个，{dup} 个已存在") };
+        let mut msg = tr("导入 {0} 个，{1} 个已存在", "匯入 {0} 個，{1} 個已存在", "Imported {0}, {1} already here").replace("{0}", &added.to_string()).replace("{1}", &dup.to_string());
         if unsupported > 0 {
-            msg += &if en() { format!(", {unsupported} unsupported (HOTP etc.)") } else { format!("，{unsupported} 个不支持（HOTP 等）") };
+            msg += &tr("，{0} 个不支持（HOTP 等）", "，{0} 個不支援（HOTP 等）", ", {0} unsupported (HOTP etc.)").replace("{0}", &unsupported.to_string());
         }
         self.set_note(msg, added == 0 && unsupported > 0);
     }
@@ -454,9 +454,14 @@ impl App {
             Id::Opacity => return false,
             Id::Top => self.set_topmost(!self.cfg.topmost),
             Id::Auto => sys::set_autostart(!sys::autostart()),
-            Id::Lang(en) => {
-                self.cfg.en = Some(en);
-                config::set_lang(self.cfg.en);
+            Id::Lang(l) => {
+                self.cfg.lang = Some(l);
+                config::set_lang(self.cfg.lang);
+                // 字体的排版区域跟着语言走（繁体用 zh-TW 字形），重建一次
+                unsafe {
+                    let _ = DeleteObject(self.fonts.edit.into());
+                }
+                self.fonts = Fonts::new(&self.dw, unsafe { GetDpiForSystem() });
                 self.save_cfg();
             }
             Id::ImportFile => {
@@ -777,9 +782,9 @@ fn main() {
 
         let mut cfg = Config::parse(&std::fs::read_to_string(data.join("config.txt")).unwrap_or_default());
         if let Some(l) = arg(&args, "--lang") {
-            cfg.en = Some(l == "en");
+            cfg.lang = Lang::parse(&l);
         }
-        config::set_lang(cfg.en);
+        config::set_lang(cfg.lang);
         // 文件不存在 = 还没导入过；存在但解不开 = 换了电脑或用户，锁住不写
         let (vault, locked) = match std::fs::read(data.join("vault.dat")) {
             Err(_) => (Vault::default(), false),
@@ -868,7 +873,7 @@ fn main() {
         a.tray(NIM_ADD);
         if a.locked {
             // 一直显示，不自动消失
-            a.note = Some((tr("验证码数据无法解密：只能在原来的电脑和 Windows 用户下打开", "Can't decrypt the codes: open them on the original PC and Windows user").into(), true, u64::MAX));
+            a.note = Some((tr("验证码数据无法解密：只能在原来的电脑和 Windows 用户下打开", "驗證碼資料無法解密：只能在原本的電腦和 Windows 使用者下開啟", "Can't decrypt the codes: open them on the original PC and Windows user").into(), true, u64::MAX));
         }
         a.tick();
         if !a.cfg.hidden {

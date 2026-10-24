@@ -91,7 +91,7 @@ pub struct Fonts {
 impl Fonts {
     pub fn new(dw: &IDWriteFactory, dpi: u32) -> Fonts {
         let mk = |fam: PCWSTR, size: f32, weight: DWRITE_FONT_WEIGHT| unsafe {
-            let f = dw.CreateTextFormat(fam, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("zh-CN")).expect("创建字体失败");
+            let f = dw.CreateTextFormat(fam, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, crate::config::locale()).expect("创建字体失败");
             let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             let trim = DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 };
@@ -314,8 +314,8 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
     }
     if entries.is_empty() {
         p.text("\u{ED14}", rect(l, top + 6.0, r, top + 46.0), &f.icon_big, th.muted, Align::C);
-        p.text(tr("把验证器导出的二维码图片拖到这里", "Drop exported QR code images here"), rect(l, top + 52.0, r, top + 72.0), &f.f12, th.text, Align::C);
-        p.text(tr("或点 + 选择图片、Ctrl+V 粘贴截图", "or click + to pick, Ctrl+V to paste"), rect(l, top + 74.0, r, top + 92.0), &f.f11, th.muted, Align::C);
+        p.text(tr("把验证器导出的二维码图片拖到这里", "把驗證器匯出的 QR 碼圖片拖到這裡", "Drop exported QR code images here"), rect(l, top + 52.0, r, top + 72.0), &f.f12, th.text, Align::C);
+        p.text(tr("或点 + 选择图片、Ctrl+V 粘贴截图", "或按 + 選擇圖片、Ctrl+V 貼上截圖", "or click + to pick, Ctrl+V to paste"), rect(l, top + 74.0, r, top + 92.0), &f.f11, th.muted, Align::C);
         let total = top + EMPTY;
         return Frame { h: total, list: (top, 0.0), hits };
     }
@@ -340,7 +340,7 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
         p.ring(cx, ry + ROW / 2.0 - 1.0, 8.0, left as f32 / e.otp.period as f32, th.track, if urgent { th.danger } else { th.accent });
         let code_r = rect(l, ry, cx - 18.0, ry + ROW - 2.0);
         let cw = if a.copied == Some(e.id) {
-            p.text(tr("已复制", "Copied"), code_r, &f.f12b, th.accent, Align::R)
+            p.text(tr("已复制", "已複製", "Copied"), code_r, &f.f12b, th.accent, Align::R)
         } else {
             p.text(&split_code(&e.otp.code(now)), code_r, &f.code, if urgent { th.danger } else { th.text }, Align::R)
         };

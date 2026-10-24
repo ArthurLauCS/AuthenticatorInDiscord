@@ -34,12 +34,15 @@ RestartApplications=no
 
 [Languages]
 Name: "zh"; MessagesFile: "ChineseSimplified.isl"
+Name: "tw"; MessagesFile: "ChineseTraditional.isl"
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
 zh.AutoStart=开机自动启动
+tw.AutoStart=開機自動啟動
 en.AutoStart=Start with Windows
 zh.DeleteData=同时删除设置和导入的验证器吗？%n%n删掉后只能重新导入 Google 验证器的二维码。重装时保留它们可以接着用。
+tw.DeleteData=同時刪除設定和匯入的驗證器嗎？%n%n刪除後只能重新匯入 Google 驗證器的 QR 碼。重新安裝時保留它們可以繼續使用。
 en.DeleteData=Also delete your settings and imported authenticators?%n%nOnce deleted, you would have to import the Google Authenticator QR codes again. Keep them if you plan to reinstall.
 
 [Tasks]

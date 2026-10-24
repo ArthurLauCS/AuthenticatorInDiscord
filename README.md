@@ -6,11 +6,11 @@ A Windows desktop tile that shows your Google Authenticator codes, live. Import 
 
 - A single ~1.2 MB exe. About 6 MB of private memory; around 40 MB once Windows loads your input method into it.
 - Follows the system light / dark theme; adjustable opacity, down to a see-through tile.
-- English and Chinese interface.
+- English, Simplified Chinese and Traditional Chinese interface.
 
 ## Install
 
-Run `AuthTile-Setup-<version>.exe`. Requires 64-bit Windows 10 or 11.
+Download `AuthTile-Setup-<version>.exe` from [Releases](https://github.com/ArthurLauCS/AuthenticatorInDiscord/releases/latest) and run it. Requires 64-bit Windows 10 or 11.
 
 - The installer is not signed with a commercial code-signing certificate, so Windows may show "Windows protected your PC". Click **More info** → **Run anyway**.
 - It installs for the current user only and does not ask for administrator permission.

@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 use windows_numerics::Vector2;
 
-use crate::config::{en, tr};
+use crate::config::{Lang, lang, tr};
 use crate::gfx::Surface;
 use crate::view::{Align, P, Theme, inside, rect, rgba, with_a};
 use crate::{App, app, sys};
@@ -31,7 +31,7 @@ pub enum Id {
     Opacity,
     Top,
     Auto,
-    Lang(bool),
+    Lang(Lang),
     ImportFile,
     ImportClip,
     Hide,
@@ -72,28 +72,28 @@ fn rows(a: &App, armed: bool) -> Vec<Row> {
     if a.menu_for.is_some() {
         // Segoe Fluent Icons：E8C8 复制，E8AC 重命名，E74A / E74B 上下箭头，E74D 删除
         return vec![
-            Row::Act(Id::Copy, "\u{E8C8}", tr("复制验证码", "Copy code")),
-            Row::Act(Id::Rename, "\u{E8AC}", tr("重命名", "Rename")),
-            Row::Act(Id::Up, "\u{E74A}", tr("上移", "Move up")),
-            Row::Act(Id::Down, "\u{E74B}", tr("下移", "Move down")),
+            Row::Act(Id::Copy, "\u{E8C8}", tr("复制验证码", "複製驗證碼", "Copy code")),
+            Row::Act(Id::Rename, "\u{E8AC}", tr("重命名", "重新命名", "Rename")),
+            Row::Act(Id::Up, "\u{E74A}", tr("上移", "上移", "Move up")),
+            Row::Act(Id::Down, "\u{E74B}", tr("下移", "下移", "Move down")),
             Row::Sep,
-            Row::Act(Id::Delete, "\u{E74D}", if armed { tr("再点一次确认删除", "Click again to delete") } else { tr("删除", "Delete") }),
+            Row::Act(Id::Delete, "\u{E74D}", if armed { tr("再点一次确认删除", "再按一次確認刪除", "Click again to delete") } else { tr("删除", "刪除", "Delete") }),
         ];
     }
     vec![
         Row::Slider,
         Row::Sep,
-        Row::Switch(Id::Top, tr("置顶显示", "Always on top"), a.cfg.topmost),
-        Row::Switch(Id::Auto, tr("开机自启", "Start with Windows"), sys::autostart()),
+        Row::Switch(Id::Top, tr("置顶显示", "保持在最上層", "Always on top"), a.cfg.topmost),
+        Row::Switch(Id::Auto, tr("开机自启", "開機自動啟動", "Start with Windows"), sys::autostart()),
         // 语言入口和选项都带英文，切到看不懂的语言后也能找回来
-        Row::Seg(tr("语言/Language", "Language"), vec![(Id::Lang(false), "中文/Chinese", !en()), (Id::Lang(true), "English", en())]),
+        Row::Seg(tr("语言/Language", "語言/Language", "Language"), vec![(Id::Lang(Lang::Zh), "简体中文", lang() == Lang::Zh), (Id::Lang(Lang::Tw), "繁體中文", lang() == Lang::Tw), (Id::Lang(Lang::En), "English", lang() == Lang::En)]),
         Row::Sep,
         // E8E5 打开文件，E77F 粘贴，ED1A 隐藏，E890 显示，E7E8 电源
-        Row::Act(Id::ImportFile, "\u{E8E5}", tr("导入二维码图片…", "Import QR images…")),
-        Row::Act(Id::ImportClip, "\u{E77F}", tr("从剪贴板导入", "Import from clipboard")),
-        if a.cfg.hidden { Row::Act(Id::Hide, "\u{E890}", tr("显示磁贴", "Show tile")) } else { Row::Act(Id::Hide, "\u{ED1A}", tr("隐藏磁贴", "Hide tile")) },
+        Row::Act(Id::ImportFile, "\u{E8E5}", tr("导入二维码图片…", "匯入 QR 碼圖片…", "Import QR images…")),
+        Row::Act(Id::ImportClip, "\u{E77F}", tr("从剪贴板导入", "從剪貼簿匯入", "Import from clipboard")),
+        if a.cfg.hidden { Row::Act(Id::Hide, "\u{E890}", tr("显示磁贴", "顯示小工具", "Show tile")) } else { Row::Act(Id::Hide, "\u{ED1A}", tr("隐藏磁贴", "隱藏小工具", "Hide tile")) },
         Row::Sep,
-        Row::Act(Id::Exit, "\u{E7E8}", tr("退出", "Exit")),
+        Row::Act(Id::Exit, "\u{E7E8}", tr("退出", "結束", "Exit")),
     ]
 }
 
@@ -174,7 +174,7 @@ fn draw(a: &App, m: &mut Menu) {
             match row {
                 Row::Slider => {
                     let v = a.cfg.opacity;
-                    p.text(tr("磁贴透明度", "Tile opacity"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12, th.text, Align::L);
+                    p.text(tr("磁贴透明度", "小工具透明度", "Tile opacity"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12, th.text, Align::L);
                     p.text(&format!("{v}%"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12b, th.muted, Align::R);
                     let (l, r, cy) = (X + 8.0, w - X - 8.0, y + 42.0);
                     let x = l + (r - l) * (v - OPACITY_MIN) as f32 / (100 - OPACITY_MIN) as f32;

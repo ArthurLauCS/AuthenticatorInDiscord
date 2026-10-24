@@ -1,8 +1,9 @@
 //! 设置：%APPDATA%\AuthTile\config.txt，每行 键|值。界面语言也存这里。
 
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
 
 use windows::Win32::Globalization::GetUserDefaultUILanguage;
+use windows_core::{PCWSTR, w};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -10,7 +11,7 @@ pub struct Config {
     pub pos: [i32; 3],
     pub topmost: bool,
     /// None 时跟随系统界面语言
-    pub en: Option<bool>,
+    pub lang: Option<Lang>,
     pub hidden: bool,
     /// 磁贴底色的不透明度（20～100）
     pub opacity: u32,
@@ -18,7 +19,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { pos: [0; 3], topmost: false, en: None, hidden: false, opacity: 100 }
+        Config { pos: [0; 3], topmost: false, lang: None, hidden: false, opacity: 100 }
     }
 }
 
@@ -35,7 +36,7 @@ impl Config {
                     }
                 }
                 "topmost" => c.topmost = v == "1",
-                "lang" => c.en = Some(v == "en"),
+                "lang" => c.lang = Lang::parse(v),
                 "hidden" => c.hidden = v == "1",
                 "opacity" => c.opacity = v.parse().unwrap_or(100),
                 _ => {}
@@ -47,26 +48,70 @@ impl Config {
     pub fn to_text(&self) -> String {
         let b = |v: bool| if v { "1" } else { "0" };
         let mut s = format!("pos|{},{},{}\ntopmost|{}\nhidden|{}\nopacity|{}\n", self.pos[0], self.pos[1], self.pos[2], b(self.topmost), b(self.hidden), self.opacity);
-        if let Some(en) = self.en {
-            s += if en { "lang|en\n" } else { "lang|zh\n" };
+        if let Some(l) = self.lang {
+            s += &format!("lang|{}\n", l.code());
         }
         s
     }
 }
 
-static EN: AtomicBool = AtomicBool::new(false);
-
-pub fn set_lang(en: Option<bool>) {
-    // 主语言号在低 10 位，0x04 是中文
-    EN.store(en.unwrap_or_else(|| (unsafe { GetUserDefaultUILanguage() } & 0x3FF) != 0x04), Relaxed);
+/// 界面语言：简体中文、繁体中文、英文
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lang {
+    Zh,
+    Tw,
+    En,
 }
 
-pub fn en() -> bool {
-    EN.load(Relaxed)
+impl Lang {
+    /// config.txt 里的写法，也是安装包的语言名和 --lang 参数
+    pub fn code(self) -> &'static str {
+        match self {
+            Lang::Zh => "zh",
+            Lang::Tw => "tw",
+            Lang::En => "en",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Lang> {
+        [Lang::Zh, Lang::Tw, Lang::En].into_iter().find(|l| l.code() == s)
+    }
 }
 
-pub fn tr(zh: &'static str, en: &'static str) -> &'static str {
-    if self::en() { en } else { zh }
+static LANG: AtomicU8 = AtomicU8::new(Lang::Zh as u8);
+
+pub fn set_lang(lang: Option<Lang>) {
+    let l = lang.unwrap_or_else(|| {
+        // 主语言号在低 10 位，0x04 是中文；台湾、香港、澳门和中文（繁体）用繁体
+        let id = unsafe { GetUserDefaultUILanguage() };
+        match (id & 0x3FF, id) {
+            (0x04, 0x0404 | 0x0C04 | 0x1404 | 0x7C04) => Lang::Tw,
+            (0x04, _) => Lang::Zh,
+            _ => Lang::En,
+        }
+    });
+    LANG.store(l as u8, Relaxed);
+}
+
+pub fn lang() -> Lang {
+    match LANG.load(Relaxed) {
+        1 => Lang::Tw,
+        2 => Lang::En,
+        _ => Lang::Zh,
+    }
+}
+
+pub fn tr(zh: &'static str, tw: &'static str, en: &'static str) -> &'static str {
+    match lang() {
+        Lang::Zh => zh,
+        Lang::Tw => tw,
+        Lang::En => en,
+    }
+}
+
+/// 文字排版的区域：繁体界面用 zh-TW，汉字取繁体字形；英文界面也按 zh-CN，因为账号名常是中文
+pub fn locale() -> PCWSTR {
+    if lang() == Lang::Tw { w!("zh-TW") } else { w!("zh-CN") }
 }
 
 #[cfg(test)]
@@ -75,8 +120,9 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let c = Config { pos: [-10, 20, 300], topmost: true, en: Some(true), hidden: true, opacity: 45 };
+        let c = Config { pos: [-10, 20, 300], topmost: true, lang: Some(Lang::Tw), hidden: true, opacity: 45 };
         assert_eq!(Config::parse(&c.to_text()), c);
-        assert_eq!(Config::parse("\u{feff}pos|1,2\nbad\nlang|zh"), Config { en: Some(false), ..Default::default() });
+        assert_eq!(Config::parse("\u{feff}pos|1,2\nbad\nlang|zh"), Config { lang: Some(Lang::Zh), ..Default::default() });
+        assert_eq!(Config::parse("lang|xx").lang, None);
     }
 }

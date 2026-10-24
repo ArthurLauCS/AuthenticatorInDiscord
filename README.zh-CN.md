@@ -6,11 +6,11 @@ Windows 桌面磁贴，实时显示 Google 验证器（Google Authenticator）�
 
 - 单个约 1.2 MB 的 exe。私有内存约 6 MB；Windows 把输入法载入进程后约 40 MB。
 - 跟随系统浅色 / 深色主题；透明度可调，最低可以几乎透明。
-- 中文、英文界面。
+- 简体中文、繁体中文、英文界面。
 
 ## 安装
 
-运行 `AuthTile-Setup-<版本>.exe`。需要 64 位 Windows 10 或 11。
+从 [Releases](https://github.com/ArthurLauCS/AuthenticatorInDiscord/releases/latest) 下载 `AuthTile-Setup-<版本>.exe` 并运行。需要 64 位 Windows 10 或 11。
 
 - 安装包没有商业代码签名证书，Windows 可能提示“Windows 已保护你的电脑”，点**更多信息** → **仍要运行**。
 - 只为当前用户安装，不需要管理员权限。
