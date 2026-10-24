@@ -41,6 +41,8 @@ pub enum Id {
     Rename,
     Up,
     Down,
+    /// 隐藏或取消隐藏这一条
+    HideRow,
     Delete,
 }
 
@@ -69,13 +71,14 @@ pub struct Menu {
 
 /// 右键在某条验证码上（a.menu_for）弹条目菜单，其他地方弹设置菜单
 fn rows(a: &App, armed: bool) -> Vec<Row> {
-    if a.menu_for.is_some() {
-        // Segoe Fluent Icons：E8C8 复制，E8AC 重命名，E74A / E74B 上下箭头，E74D 删除
+    if let Some(id) = a.menu_for {
+        // Segoe Fluent Icons：E8C8 复制，E8AC 重命名，E74A / E74B 上下箭头，ED1A 隐藏，E890 显示，E74D 删除
         return vec![
             Row::Act(Id::Copy, "\u{E8C8}", tr("复制验证码", "複製驗證碼", "Copy code")),
             Row::Act(Id::Rename, "\u{E8AC}", tr("重命名", "重新命名", "Rename")),
             Row::Act(Id::Up, "\u{E74A}", tr("上移", "上移", "Move up")),
             Row::Act(Id::Down, "\u{E74B}", tr("下移", "下移", "Move down")),
+            if a.vault.get(id).is_some_and(|e| e.hidden) { Row::Act(Id::HideRow, "\u{E890}", tr("取消隐藏", "取消隱藏", "Unhide")) } else { Row::Act(Id::HideRow, "\u{ED1A}", tr("隐藏", "隱藏", "Hide")) },
             Row::Sep,
             Row::Act(Id::Delete, "\u{E74D}", if armed { tr("再点一次确认删除", "再按一次確認刪除", "Click again to delete") } else { tr("删除", "刪除", "Delete") }),
         ];

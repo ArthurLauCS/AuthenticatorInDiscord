@@ -45,6 +45,8 @@ const WM_APP_SCAN: u32 = WM_APP + 2;
 const WM_APP_RENAME: u32 = WM_APP + 3;
 const T_TICK: usize = 1;
 const T_COPIED: usize = 2;
+/// 拖动排序时贴着列表边缘自动滚动
+const T_DRAG: usize = 3;
 const EDGE: f32 = 6.0;
 const DEFAULT_W: f32 = 300.0;
 /// 导入结果提示显示多久（毫秒）
@@ -95,11 +97,14 @@ pub struct App {
     edit_brush: HBRUSH,
     pub hits: Vec<(D2D_RECT_F, Hit)>,
     pub hover: Option<Hit>,
-    /// 列表滚动位置、列表区域 (顶, 可见高度)
+    /// 列表滚动位置、列表区域 (顶, 可见高度, 总高)
     pub scroll: f32,
-    pub list: (f32, f32),
+    pub list: (f32, f32, f32),
+    /// 已隐藏的验证码展开着没有（不存盘，启动时收起）
+    pub expanded: bool,
+    pub drag: Option<view::Drag>,
     tracking: bool,
-    /// 按下左键：屏幕坐标、窗口位置、是否拖过阈值
+    /// 按下左键：屏幕坐标、窗口位置、是否已经在拖（拖窗口或拖排序）
     press: Option<(POINT, RECT, bool)>,
     tray_icon: HICON,
     taskbar_created: u32,
@@ -128,6 +133,15 @@ fn scale(hwnd: HWND) -> f32 {
 
 fn lparam_pt(lp: LPARAM) -> POINT {
     POINT { x: lp.0 as i16 as i32, y: (lp.0 >> 16) as i16 as i32 }
+}
+
+/// 鼠标消息的位置换成屏幕坐标。不用 GetCursorPos：测试脚本发来的鼠标消息也按消息里的位置拖
+fn screen_pt(hwnd: HWND, lp: LPARAM) -> POINT {
+    let mut p = lparam_pt(lp);
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut p);
+    }
+    p
 }
 
 fn copy_wide(dst: &mut [u16], s: &str) {
@@ -294,7 +308,7 @@ impl App {
             let _ = self.gfx.present(&surf);
             self.hits = fr.hits;
             self.list = fr.list;
-            self.scroll = self.scroll.min((self.vault.entries.len() as f32 * view::ROW - fr.list.1).max(0.0));
+            self.scroll = self.scroll.min((fr.list.2 - fr.list.1).max(0.0));
             // 高度跟着条目数走，最高到工作区高。顶边以用户摆的位置为准，放不下才临时往上挪；拖动窗口途中不动位置
             let want = (fr.h.min(max_h) * s).ceil() as i32;
             if want != rc.bottom {
@@ -325,8 +339,73 @@ impl App {
             Hit::Row(id) => self.copy(id),
             Hit::Import => self.import_dialog(),
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
+            Hit::More => self.expanded = !self.expanded,
         }
         self.invalidate();
+    }
+
+    /// 按住拖过了阈值：按在标题栏空白处拖窗口，按在验证码上拖排序；按在按钮上不拖，松开时照常算点击
+    fn start_drag(&mut self, p0: POINT) {
+        let mut c = p0;
+        unsafe {
+            let _ = ScreenToClient(self.hwnd, &mut c);
+        }
+        let y = c.y as f32 / scale(self.hwnd);
+        let moved = match self.hit_at(c) {
+            Some(Hit::Row(id)) => {
+                let lay = view::layout(self);
+                let Some(&(_, top)) = lay.rows.iter().find(|(i, _)| self.vault.entries[*i].id == id) else { return };
+                self.finish_rename(true);
+                self.drag = Some(view::Drag { id, grab: y - self.list.0 + self.scroll - top, y });
+                unsafe {
+                    SetTimer(Some(self.hwnd), T_DRAG, 16, None);
+                }
+                true
+            }
+            None => y < view::HEAD,
+            _ => false,
+        };
+        if let Some(p) = self.press.as_mut() {
+            p.2 = moved;
+        }
+    }
+
+    /// 拖动排序时鼠标贴着列表上下边缘，列表往那边滚
+    fn drag_scroll(&mut self) {
+        let Some(d) = &self.drag else { return };
+        let (top, vis, h) = self.list;
+        let v = if d.y < top + view::ROW / 2.0 {
+            -8.0
+        } else if d.y > top + vis - view::ROW / 2.0 {
+            8.0
+        } else {
+            return;
+        };
+        let s = (self.scroll + v).clamp(0.0, (h - vis).max(0.0));
+        if s != self.scroll {
+            self.scroll = s;
+            self.invalidate();
+        }
+    }
+
+    /// 松开左键：拖排序的放下、拖窗口的记下位置、没拖过的算点击。鼠标被别的窗口抢走（弹窗、Alt+Tab）时 at 为 None，当作在原处松开
+    fn release(&mut self, press: Option<(POINT, RECT, bool)>, at: Option<POINT>) {
+        let Some((_, _, moved)) = press else { return };
+        if let Some(id) = self.drag.as_ref().map(|d| d.id) {
+            let slot = view::layout(self).slot;
+            self.drag = None;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), T_DRAG);
+            }
+            if self.vault.place(id, slot) {
+                self.save_vault();
+            }
+            self.invalidate();
+        } else if moved {
+            self.save_pos();
+        } else if let Some(h) = at.and_then(|p| self.hit_at(p)) {
+            self.click(h);
+        }
     }
 
     fn copy(&mut self, id: u32) {
@@ -489,6 +568,11 @@ impl App {
                     self.save_vault();
                 }
             }
+            Id::HideRow => {
+                if row.is_some_and(|r| self.vault.hide(r, !self.vault.get(r).is_some_and(|e| e.hidden))) {
+                    self.save_vault();
+                }
+            }
             Id::Delete => {
                 if row.is_some_and(|r| self.vault.remove(r)) {
                     self.save_vault();
@@ -508,13 +592,13 @@ impl App {
     /// 改名框：无边框、颜色跟主题（WM_CTLCOLOREDIT 里设），盖在这一行的名字上；回车保存，Esc 取消，点别处也保存
     fn start_rename(&mut self, id: u32) {
         self.finish_rename(false);
-        let Some(i) = self.vault.entries.iter().position(|e| e.id == id) else { return };
+        let Some(&(i, y)) = view::layout(self).rows.iter().find(|(i, _)| self.vault.entries[*i].id == id) else { return };
         let s = scale(self.hwnd);
         let mut rc = RECT::default();
         unsafe {
             let _ = GetClientRect(self.hwnd, &mut rc);
         }
-        let r = view::label_rect(self, i, rc.right as f32 / s);
+        let r = view::label_rect(self, y, rc.right as f32 / s);
         let mut pt = POINT { x: (r.left * s) as i32, y: (r.top * s) as i32 };
         unsafe {
             let _ = ClientToScreen(self.hwnd, &mut pt);
@@ -637,14 +721,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // 菜单开着时也不激活：否则菜单先因失活关掉，这次点击会落到磁贴的按钮上
             WM_MOUSEACTIVATE if a.cfg.topmost || a.menu.is_some() => return LRESULT(MA_NOACTIVATE as isize),
             WM_MOUSEMOVE => {
-                if let Some((p0, r0, moved)) = a.press.as_mut() {
-                    let mut p = POINT::default();
-                    let _ = GetCursorPos(&mut p);
+                if let Some((p0, r0, moved)) = a.press {
+                    let p = screen_pt(hwnd, lp);
                     let (dx, dy) = (p.x - p0.x, p.y - p0.y);
-                    if !*moved && (dx.abs() > GetSystemMetrics(SM_CXDRAG) || dy.abs() > GetSystemMetrics(SM_CYDRAG)) {
-                        *moved = true;
+                    if !moved && (dx.abs() > GetSystemMetrics(SM_CXDRAG) || dy.abs() > GetSystemMetrics(SM_CYDRAG)) {
+                        a.start_drag(p0);
                     }
-                    if *moved {
+                    if let Some(d) = a.drag.as_mut() {
+                        d.y = lparam_pt(lp).y as f32 / scale(hwnd);
+                        a.invalidate();
+                    } else if a.press.is_some_and(|p| p.2) {
                         // 整个窗口留在鼠标所在显示器的工作区里
                         let r = RECT { left: r0.left + dx, top: r0.top + dy, right: r0.right + dx, bottom: r0.bottom + dy };
                         let (x, y) = fit(&r, work_area(MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST)));
@@ -672,30 +758,20 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // 磁贴点击不抢焦点，菜单收不到失活消息：菜单开着时，点磁贴只关菜单，不触发磁贴上的操作（和系统菜单一样）
             WM_LBUTTONDOWN if a.menu.is_some() => menu::close(a),
             WM_LBUTTONDOWN => {
-                let (mut p, mut r) = (POINT::default(), RECT::default());
-                let _ = GetCursorPos(&mut p);
+                let mut r = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut r);
-                a.press = Some((p, r, false));
+                a.press = Some((screen_pt(hwnd, lp), r, false));
                 SetCapture(hwnd);
             }
+            // 先取走按下状态再放开鼠标：ReleaseCapture 发来的 WM_CAPTURECHANGED 就不会再处理一遍
             WM_LBUTTONUP => {
                 let pr = a.press.take();
                 let _ = ReleaseCapture();
-                match pr {
-                    Some((_, _, true)) => a.save_pos(),
-                    Some(_) => {
-                        if let Some(h) = a.hit_at(lparam_pt(lp)) {
-                            a.click(h);
-                        }
-                    }
-                    None => {}
-                }
+                a.release(pr, Some(lparam_pt(lp)));
             }
-            // 拖动中鼠标被别的窗口抢走（弹窗、Alt+Tab）：当作松开
             WM_CAPTURECHANGED if a.press.is_some() && lp.0 != hwnd.0 as isize => {
-                if a.press.take().is_some_and(|p| p.2) {
-                    a.save_pos();
-                }
+                let pr = a.press.take();
+                a.release(pr, None);
             }
             WM_RBUTTONUP => {
                 let row = match a.hit_at(lparam_pt(lp)) {
@@ -712,7 +788,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 a.start_scan(Src::Files(files));
             }
             WM_MOUSEWHEEL => {
-                let max = (a.vault.entries.len() as f32 * view::ROW - a.list.1).max(0.0);
+                let max = (a.list.2 - a.list.1).max(0.0);
                 a.scroll = (a.scroll - (wp.0 >> 16) as i16 as f32 / 120.0 * view::ROW).clamp(0.0, max);
                 a.invalidate();
             }
@@ -739,6 +815,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_TIMER => match wp.0 {
                 T_TICK => a.tick(),
+                T_DRAG => a.drag_scroll(),
                 T_COPIED => {
                     let _ = KillTimer(Some(hwnd), T_COPIED);
                     a.copied = None;
@@ -859,7 +936,9 @@ fn main() {
             hits: Vec::new(),
             hover: None,
             scroll: 0.0,
-            list: (0.0, 0.0),
+            list: (0.0, 0.0, 0.0),
+            expanded: false,
+            drag: None,
             tracking: false,
             press: None,
             // 资源里的应用图标（编号 1），还没打包图标时用系统默认图标

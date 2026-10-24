@@ -32,9 +32,11 @@ PNG, JPG, WebP and BMP work, and one image may hold several QR codes. Standard `
 
 - **Click a row** to copy its code. Copied codes are kept out of the Windows clipboard history (Win+V).
 - The ring next to each code shows the time left and turns red in the last 5 seconds.
-- **Right-click a row** to copy, rename (emoji welcome), move it up or down, or delete it. Delete asks you to click a second time.
+- **Right-click a row** to copy, rename (emoji welcome), move it up or down, hide it, or delete it. Delete asks you to click a second time.
+- **Drag a row** to reorder the codes.
+- Hidden codes are not deleted: they fold under the **Show N hidden** button at the bottom. Click it to show them, dimmed, below the button; they can still be copied, dragged and unhidden there. The tile starts with them folded.
 - **Right-click elsewhere on the tile, or the tray icon,** for settings: opacity, always on top, start with Windows, language, import, hide the tile, exit.
-- Drag the tile to move it. The pin button in the header toggles always on top. Left-click the tray icon to hide or show the tile.
+- Drag the tile's header to move it. The pin button in the header toggles always on top. Left-click the tray icon to hide or show the tile.
 
 ## Your data
 
