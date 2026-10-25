@@ -43,6 +43,10 @@ pub enum Id {
     Down,
     /// 隐藏或取消隐藏这一条
     HideRow,
+    /// 填登录账号、密码
+    SetLogin,
+    /// 开关这一条的登录按钮
+    LoginBtn,
     Delete,
 }
 
@@ -72,16 +76,23 @@ pub struct Menu {
 /// 右键在某条验证码上（a.menu_for）弹条目菜单，其他地方弹设置菜单
 fn rows(a: &App, armed: bool) -> Vec<Row> {
     if let Some(id) = a.menu_for {
-        // Segoe Fluent Icons：E8C8 复制，E8AC 重命名，E74A / E74B 上下箭头，ED1A 隐藏，E890 显示，E74D 删除
-        return vec![
+        let e = a.vault.get(id);
+        // Segoe Fluent Icons：E8C8 复制，E8AC 重命名，E74A / E74B 上下箭头，ED1A 隐藏，E890 显示，E77B 联系人，E74D 删除
+        let mut rows = vec![
             Row::Act(Id::Copy, "\u{E8C8}", tr("复制验证码", "複製驗證碼", "Copy code")),
             Row::Act(Id::Rename, "\u{E8AC}", tr("重命名", "重新命名", "Rename")),
             Row::Act(Id::Up, "\u{E74A}", tr("上移", "上移", "Move up")),
             Row::Act(Id::Down, "\u{E74B}", tr("下移", "下移", "Move down")),
-            if a.vault.get(id).is_some_and(|e| e.hidden) { Row::Act(Id::HideRow, "\u{E890}", tr("取消隐藏", "取消隱藏", "Unhide")) } else { Row::Act(Id::HideRow, "\u{ED1A}", tr("隐藏", "隱藏", "Hide")) },
+            if e.is_some_and(|e| e.hidden) { Row::Act(Id::HideRow, "\u{E890}", tr("取消隐藏", "取消隱藏", "Unhide")) } else { Row::Act(Id::HideRow, "\u{ED1A}", tr("隐藏", "隱藏", "Hide")) },
             Row::Sep,
-            Row::Act(Id::Delete, "\u{E74D}", if armed { tr("再点一次确认删除", "再按一次確認刪除", "Click again to delete") } else { tr("删除", "刪除", "Delete") }),
+            Row::Act(Id::SetLogin, "\u{E77B}", tr("设置游戏登录账号…", "設定遊戲登入帳號…", "Set game login…")),
         ];
+        // 账号密码设全了才能开登录按钮
+        if let Some(e) = e.filter(|e| e.can_login()) {
+            rows.push(Row::Switch(Id::LoginBtn, tr("登录按钮", "登入按鈕", "Login button"), e.login));
+        }
+        rows.extend([Row::Sep, Row::Act(Id::Delete, "\u{E74D}", if armed { tr("再点一次确认删除", "再按一次確認刪除", "Click again to delete") } else { tr("删除", "刪除", "Delete") })]);
+        return rows;
     }
     vec![
         Row::Slider,

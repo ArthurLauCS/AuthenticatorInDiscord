@@ -1,5 +1,6 @@
 //! 条目列表和它的明文格式；磁贴用 DPAPI 加密后存盘。
-//! 首行 `next|下一个编号`，之后每行一条，字段用制表符分隔：编号、显示名、发行方、账号、Base32 密钥、算法、位数、周期、是否隐藏（1 = 隐藏，没有这一列按显示）。
+//! 首行 `next|下一个编号`，之后每行一条，字段用制表符分隔：编号、显示名、发行方、账号、Base32 密钥、算法、位数、周期、是否隐藏（1 = 隐藏）、
+//! 游戏登录账号、密码、是否显示登录按钮（1 = 显示）。后面几列没有时按不隐藏、没设登录处理。
 
 use crate::{Account, Algo, Otp, base32_decode, base32_encode};
 
@@ -14,6 +15,11 @@ pub struct Entry {
     pub otp: Otp,
     /// 隐藏的不删，磁贴上收在展开按钮下面；排序在显示的、隐藏的两组里各排各的
     pub hidden: bool,
+    /// 用这个验证码登录的游戏账号和密码，空 = 没设
+    pub user: String,
+    pub pass: String,
+    /// 行上显示登录按钮；设了账号密码才能开
+    pub login: bool,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -21,6 +27,13 @@ pub struct Vault {
     pub entries: Vec<Entry>,
     /// 编号只增不复用：条目删掉后，还开着的菜单、改名框不会指到后来导入的条目
     next: u32,
+}
+
+impl Entry {
+    /// 账号密码都设了
+    pub fn can_login(&self) -> bool {
+        !self.user.is_empty() && !self.pass.is_empty()
+    }
 }
 
 /// 名字里的制表符、换行会破坏存储格式，换成空格
@@ -39,8 +52,9 @@ impl Vault {
             let f: Vec<&str> = l.split('\t').collect();
             let [id, label, issuer, name, secret, algo, digits, period, ..] = f[..] else { continue };
             let (Ok(id), Some(secret), Some(algo), Ok(digits), Ok(period)) = (id.parse(), base32_decode(secret), Algo::from_name(algo), digits.parse(), period.parse()) else { continue };
-            let hidden = f.get(8) == Some(&"1");
-            v.entries.push(Entry { id, label: label.into(), issuer: issuer.into(), name: name.into(), otp: Otp { secret, algo, digits, period }, hidden });
+            let col = |i: usize| f.get(i).copied().unwrap_or_default();
+            let (hidden, user, pass, login) = (col(8) == "1", col(9).into(), col(10).into(), col(11) == "1");
+            v.entries.push(Entry { id, label: label.into(), issuer: issuer.into(), name: name.into(), otp: Otp { secret, algo, digits, period }, hidden, user, pass, login });
         }
         v.next = v.next.max(v.entries.iter().map(|e| e.id + 1).max().unwrap_or(1));
         v
@@ -50,7 +64,7 @@ impl Vault {
         let mut s = format!("next|{}\n", self.next);
         for e in &self.entries {
             let o = &e.otp;
-            s += &format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", e.id, e.label, e.issuer, e.name, base32_encode(&o.secret), o.algo.name(), o.digits, o.period, u8::from(e.hidden));
+            s += &format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", e.id, e.label, e.issuer, e.name, base32_encode(&o.secret), o.algo.name(), o.digits, o.period, u8::from(e.hidden), e.user, e.pass, u8::from(e.login));
         }
         s
     }
@@ -66,7 +80,7 @@ impl Vault {
             let (issuer, name) = (clean(&a.issuer), clean(&a.name));
             let label = if issuer.is_empty() { name.clone() } else { issuer.clone() };
             self.next = self.next.max(1);
-            self.entries.push(Entry { id: self.next, label, issuer, name, otp: a.otp, hidden: false });
+            self.entries.push(Entry { id: self.next, label, issuer, name, otp: a.otp, hidden: false, user: String::new(), pass: String::new(), login: false });
             self.next += 1;
         }
         let added = self.entries.len() - before;
@@ -94,6 +108,45 @@ impl Vault {
         match self.entries.iter_mut().find(|e| e.id == id) {
             Some(e) if !label.is_empty() => {
                 e.label = label;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 改登录账号；清理后为空就连密码一起清掉、关掉登录按钮。返回是否改了
+    pub fn set_user(&mut self, id: u32, user: &str) -> bool {
+        let user = clean(user);
+        match self.entries.iter_mut().find(|e| e.id == id) {
+            Some(e) if e.user != user => {
+                if user.is_empty() {
+                    e.pass.clear();
+                    e.login = false;
+                }
+                e.user = user;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 改密码：只去掉会破坏存储格式的控制字符，首尾空格算密码的一部分；空的不改，没设账号时不改
+    pub fn set_pass(&mut self, id: u32, pass: &str) -> bool {
+        let pass: String = pass.chars().filter(|c| !c.is_control()).collect();
+        match self.entries.iter_mut().find(|e| e.id == id) {
+            Some(e) if !pass.is_empty() && !e.user.is_empty() && e.pass != pass => {
+                e.pass = pass;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 开关登录按钮；账号密码没设全时开不了
+    pub fn set_login(&mut self, id: u32, on: bool) -> bool {
+        match self.entries.iter_mut().find(|e| e.id == id) {
+            Some(e) if e.login != on && (!on || e.can_login()) => {
+                e.login = on;
                 true
             }
             _ => false,
@@ -183,6 +236,26 @@ mod tests {
         assert_eq!((order(&back, false), order(&back, true)), (vec![5, 1, 2, 3], vec![4]));
         // 旧文件没有隐藏这一列
         assert!(!Vault::parse("1\tx\t\t\tJBSWY3DP\tSHA1\t6\t30\n").entries[0].hidden);
+    }
+
+    #[test]
+    fn login_fields() {
+        let mut v = Vault::default();
+        v.import(vec![acc("Game", "me", 1), acc("Mail", "me", 2)]);
+        // 没账号时设不了密码、开不了按钮
+        assert!(!v.set_pass(1, "pw") && !v.set_login(1, true));
+        assert!(v.set_user(1, " hero\t01 ") && v.set_pass(1, " p\tw ") && v.set_login(1, true));
+        let e = v.get(1).unwrap();
+        assert_eq!((e.user.as_str(), e.pass.as_str(), e.login), ("hero 01", " pw ", true));
+        // 空密码不改；存盘再读还在，另一条不受影响
+        assert!(!v.set_pass(1, "") && !v.set_pass(1, " pw "));
+        let back = Vault::parse(&v.to_text());
+        assert_eq!(back, v);
+        assert!(!back.get(2).unwrap().can_login());
+        // 清空账号：密码一起清，按钮关掉
+        assert!(v.set_user(1, "  ") && !v.set_user(1, ""));
+        let e = v.get(1).unwrap();
+        assert!(e.pass.is_empty() && !e.login);
     }
 
     #[test]

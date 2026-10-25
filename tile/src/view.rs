@@ -8,8 +8,8 @@ use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::*;
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::App;
 use crate::config::tr;
+use crate::{App, Field};
 
 pub const PAD: f32 = 14.0;
 pub const MIN_W: f32 = 240.0;
@@ -24,6 +24,8 @@ const MORE: f32 = 36.0;
 pub enum Hit {
     /// 一条验证码（条目编号），点了复制
     Row(u32),
+    /// 这一条的登录按钮，点了登录启动器
+    Login(u32),
     Import,
     Pin,
     /// 展开、收起已隐藏的验证码
@@ -424,18 +426,35 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
         // 最后 5 秒变红，和手机上的验证器一样提醒快换码了
         let urgent = left <= 5;
         p.ring(cx, ry + ROW / 2.0 - 1.0, 8.0, left as f32 / e.otp.period as f32, dim(th.track), dim(if urgent { th.danger } else { th.accent }));
-        let code_r = rect(l, ry, cx - 18.0, ry + ROW - 2.0);
+        // 开了登录按钮的，按钮放在验证码和圆环之间（E7FC 手柄）
+        let code_end = if e.login { cx - 46.0 } else { cx - 18.0 };
+        if e.login {
+            let b = rect(cx - 44.0, ry + 12.0, cx - 16.0, ry + 40.0);
+            if a.hover == Some(Hit::Login(e.id)) {
+                p.fill(b, 5.0, th.hover);
+            }
+            p.text("\u{E7FC}", b, &f.icon, dim(th.accent), Align::C);
+            hit(b, Hit::Login(e.id));
+        }
+        let code_r = rect(l, ry, code_end, ry + ROW - 2.0);
         let cw = if a.copied == Some(e.id) {
             p.text(tr("已复制", "已複製", "Copied"), code_r, &f.f12b, th.accent, Align::R)
         } else {
             p.text(&split_code(&e.otp.code(now)), code_r, &f.code, dim(if urgent { th.danger } else { th.text }), Align::R)
         };
-        let lr = (cx - 18.0 - cw - 12.0).max(l + 40.0);
-        let editing = a.editing == Some(e.id);
-        if !editing {
+        let lr = (code_end - cw - 12.0).max(l + 40.0);
+        let editing = a.editing.filter(|&(id, _)| id == e.id).map(|(_, f)| f);
+        if editing.is_none() {
             p.text(&e.label, rect(l, ry + 7.0, lr, ry + 29.0), &f.f12b, dim(th.text), Align::L);
         }
-        let sub = if e.label == e.issuer || e.issuer.is_empty() { e.name.clone() } else if e.name.is_empty() { e.issuer.clone() } else { format!("{} · {}", e.issuer, e.name) };
+        // 填登录账号、密码时，名字下面一行提示在填什么
+        let sub = match editing {
+            Some(Field::User) => tr("输入游戏账号，回车下一步", "輸入遊戲帳號，Enter 下一步", "Game ID, Enter for next").to_string(),
+            Some(Field::Pass) => tr("输入密码，回车保存", "輸入密碼，Enter 儲存", "Password, Enter to save").to_string(),
+            _ if e.label == e.issuer || e.issuer.is_empty() => e.name.clone(),
+            _ if e.name.is_empty() => e.issuer.clone(),
+            _ => format!("{} · {}", e.issuer, e.name),
+        };
         let sub = if sub == e.label { String::new() } else { sub };
         p.text(&sub, rect(l, ry + 27.0, lr, ry + 45.0), &f.f11, dim(th.muted), Align::L);
         hit(rr, Hit::Row(e.id));
