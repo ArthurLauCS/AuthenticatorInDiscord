@@ -2,11 +2,13 @@
 //! 验证码磁贴：桌面上一块小窗，显示导入的 TOTP 验证码，每秒刷新，点一下复制。
 //! 导入 Google 验证器导出的二维码图片（拖进来、选文件、Ctrl+V 粘贴截图），也认 otpauth:// 链接；已有的账号自动跳过。
 //! 数据用 DPAPI 按当前 Windows 用户加密，存在 %APPDATA%\AuthTile\vault.dat。
+//! 验证码可以绑定台服 Lost Ark 的账号密码，行上的登录按钮一键登录启动器（launcher.rs）。
 //!
 //! 参数：--data <目录> 代替 %APPDATA%\AuthTile；--top 置顶；--light / --dark 强制主题；--lang zh|tw|en 强制语言（后几个是截图走查用的）。
 
 mod config;
 mod gfx;
+mod launcher;
 mod menu;
 mod sys;
 mod view;
@@ -41,8 +43,10 @@ const CLASS: PCWSTR = w!("AuthTileMain");
 const WM_APP_TRAY: u32 = WM_APP + 1;
 /// 后台识别完一批图片
 const WM_APP_SCAN: u32 = WM_APP + 2;
-/// 菜单关掉之后再开改名框（wparam = 条目编号），免得两个窗口抢焦点
+/// 菜单关掉之后再开改名框（wparam = 条目编号，lparam = Field），免得两个窗口抢焦点
 const WM_APP_RENAME: u32 = WM_APP + 3;
+/// 后台登录启动器结束（lparam 见 launcher）
+const WM_APP_LOGIN: u32 = WM_APP + 4;
 const T_TICK: usize = 1;
 const T_COPIED: usize = 2;
 /// 拖动排序时贴着列表边缘自动滚动
@@ -68,6 +72,14 @@ enum Src {
     Text(String),
 }
 
+/// 改名框在改哪一项
+#[derive(Clone, Copy, PartialEq)]
+pub enum Field {
+    Label,
+    User,
+    Pass,
+}
+
 pub struct App {
     data: PathBuf,
     pub cfg: Config,
@@ -91,8 +103,8 @@ pub struct App {
     note: Option<(String, bool, u64)>,
     /// 刚复制过的条目，显示“已复制”
     pub copied: Option<u32>,
-    /// 正在改名的条目和改名框
-    pub editing: Option<u32>,
+    /// 正在改的条目、哪一项和改名框
+    pub editing: Option<(u32, Field)>,
     edit: Option<HWND>,
     edit_brush: HBRUSH,
     pub hits: Vec<(D2D_RECT_F, Hit)>,
@@ -106,6 +118,8 @@ pub struct App {
     tracking: bool,
     /// 按下左键：屏幕坐标、窗口位置、是否已经在拖（拖窗口或拖排序）
     press: Option<(POINT, RECT, bool)>,
+    /// 后台正在登录启动器，没结束前不再开一次
+    logging_in: bool,
     tray_icon: HICON,
     taskbar_created: u32,
     rx: Receiver<Scan>,
@@ -337,6 +351,7 @@ impl App {
     fn click(&mut self, h: Hit) {
         match h {
             Hit::Row(id) => self.copy(id),
+            Hit::Login(id) => self.login(id),
             Hit::Import => self.import_dialog(),
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
             Hit::More => self.expanded = !self.expanded,
@@ -417,6 +432,17 @@ impl App {
             }
         }
         self.invalidate();
+    }
+
+    fn login(&mut self, id: u32) {
+        let Some(e) = self.vault.get(id).filter(|e| e.can_login()) else { return };
+        if self.logging_in {
+            return self.set_note(tr("正在登录，请稍候", "正在登入，請稍候", "Signing in, please wait").into(), false);
+        }
+        let msg = tr("正在登录 {0}…", "正在登入 {0}…", "Signing in {0}…").replace("{0}", &e.label);
+        launcher::start(self.hwnd, e.user.clone(), e.pass.clone(), e.otp.clone());
+        self.logging_in = true;
+        self.set_note(msg, false);
     }
 
     fn import_dialog(&mut self) {
@@ -558,11 +584,17 @@ impl App {
                 return true;
             }
             Id::Copy => row.into_iter().for_each(|r| self.copy(r)),
-            Id::Rename => unsafe {
+            Id::Rename | Id::SetLogin => unsafe {
                 if let Some(r) = row {
-                    let _ = PostMessageW(Some(self.hwnd), WM_APP_RENAME, WPARAM(r as usize), LPARAM(0));
+                    let f = if id == Id::Rename { Field::Label } else { Field::User };
+                    let _ = PostMessageW(Some(self.hwnd), WM_APP_RENAME, WPARAM(r as usize), LPARAM(f as isize));
                 }
             },
+            Id::LoginBtn => {
+                if row.is_some_and(|r| self.vault.set_login(r, !self.vault.get(r).is_some_and(|e| e.login))) {
+                    self.save_vault();
+                }
+            }
             Id::Up | Id::Down => {
                 if row.is_some_and(|r| self.vault.shift(r, if id == Id::Up { -1 } else { 1 })) {
                     self.save_vault();
@@ -580,7 +612,7 @@ impl App {
             }
         }
         self.invalidate();
-        !matches!(id, Id::Top | Id::Auto | Id::Lang(_) | Id::Up | Id::Down)
+        !matches!(id, Id::Top | Id::Auto | Id::Lang(_) | Id::Up | Id::Down | Id::LoginBtn)
     }
 
     /// 改透明度（拖滑块时实时生效，松手再存盘）
@@ -589,8 +621,9 @@ impl App {
         self.load_theme();
     }
 
-    /// 改名框：无边框、颜色跟主题（WM_CTLCOLOREDIT 里设），盖在这一行的名字上；回车保存，Esc 取消，点别处也保存
-    fn start_rename(&mut self, id: u32) {
+    /// 改名框：无边框、颜色跟主题（WM_CTLCOLOREDIT 里设），盖在这一行的名字上；回车保存，Esc 取消，点别处也保存。
+    /// 也用来填登录账号、密码（f）：密码框显示星号、打开时是空的
+    fn start_rename(&mut self, id: u32, f: Field) {
         self.finish_rename(false);
         let Some(&(i, y)) = view::layout(self).rows.iter().find(|(i, _)| self.vault.entries[*i].id == id) else { return };
         let s = scale(self.hwnd);
@@ -602,12 +635,18 @@ impl App {
         let mut pt = POINT { x: (r.left * s) as i32, y: (r.top * s) as i32 };
         unsafe {
             let _ = ClientToScreen(self.hwnd, &mut pt);
-            let t = wide(&self.vault.entries[i].label);
+            let e = &self.vault.entries[i];
+            let t = wide(match f {
+                Field::Label => &e.label,
+                Field::User => &e.user,
+                Field::Pass => "",
+            });
+            let pw = if f == Field::Pass { ES_PASSWORD as u32 } else { 0 };
             let Ok(e) = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 w!("EDIT"),
                 PCWSTR(t.as_ptr()),
-                WS_POPUP | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                WS_POPUP | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32 | pw),
                 pt.x,
                 pt.y,
                 ((r.right - r.left) * s) as i32,
@@ -620,7 +659,7 @@ impl App {
                 return;
             };
             self.edit = Some(e);
-            self.editing = Some(id);
+            self.editing = Some((id, f));
             SendMessageW(e, WM_SETFONT, Some(WPARAM(self.fonts.edit.0 as usize)), Some(LPARAM(1)));
             SendMessageW(e, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
             let _ = windows::Win32::UI::Shell::SetWindowSubclass(e, Some(edit_proc), 1, 0);
@@ -631,13 +670,20 @@ impl App {
     }
 
     fn finish_rename(&mut self, commit: bool) {
-        let (Some(e), Some(id)) = (self.edit.take(), self.editing.take()) else { return };
+        let (Some(e), Some((id, f))) = (self.edit.take(), self.editing.take()) else { return };
         let mut buf = [0u16; 260];
         let n = unsafe { GetWindowTextW(e, &mut buf) } as usize;
         unsafe {
             let _ = DestroyWindow(e);
         }
-        if commit && self.vault.rename(id, &String::from_utf16_lossy(&buf[..n])) {
+        let t = String::from_utf16_lossy(&buf[..n]);
+        let changed = commit
+            && match f {
+                Field::Label => self.vault.rename(id, &t),
+                Field::User => self.vault.set_user(id, &t),
+                Field::Pass => self.vault.set_pass(id, &t),
+            };
+        if changed {
             self.save_vault();
         }
         self.invalidate();
@@ -658,7 +704,14 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     unsafe {
         match msg {
             WM_KEYDOWN if wp.0 == VK_RETURN.0 as usize || wp.0 == VK_ESCAPE.0 as usize => {
-                app().finish_rename(wp.0 == VK_RETURN.0 as usize);
+                let a = app();
+                let enter = wp.0 == VK_RETURN.0 as usize;
+                // 账号填完回车接着填密码；账号清空了就不用填
+                let next = a.editing.filter(|&(_, f)| enter && f == Field::User).map(|(id, _)| id);
+                a.finish_rename(enter);
+                if let Some(id) = next.filter(|&id| a.vault.get(id).is_some_and(|e| !e.user.is_empty())) {
+                    let _ = PostMessageW(Some(a.hwnd), WM_APP_RENAME, WPARAM(id as usize), LPARAM(Field::Pass as isize));
+                }
                 LRESULT(0)
             }
             WM_CHAR if wp.0 == 13 || wp.0 == 27 => LRESULT(0),
@@ -775,7 +828,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_RBUTTONUP => {
                 let row = match a.hit_at(lparam_pt(lp)) {
-                    Some(Hit::Row(id)) => Some(id),
+                    Some(Hit::Row(id) | Hit::Login(id)) => Some(id),
                     _ => None,
                 };
                 a.menu(row);
@@ -801,7 +854,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 return LRESULT(a.edit_brush.0 as isize);
             }
             WM_COMMAND if wp.0 == 1 => a.import_dialog(),
-            WM_APP_RENAME => a.start_rename(wp.0 as u32),
+            WM_APP_RENAME => a.start_rename(wp.0 as u32, match lp.0 {
+                1 => Field::User,
+                2 => Field::Pass,
+                _ => Field::Label,
+            }),
+            WM_APP_LOGIN => {
+                let r = *Box::from_raw(lp.0 as *mut std::result::Result<String, String>);
+                a.logging_in = false;
+                match r {
+                    Ok(m) => a.set_note(m, false),
+                    Err(m) => a.set_note(m, true),
+                }
+            }
             WM_APP_SCAN => {
                 while let Ok(s) = a.rx.try_recv() {
                     a.on_scan(s);
@@ -941,6 +1006,7 @@ fn main() {
             drag: None,
             tracking: false,
             press: None,
+            logging_in: false,
             // 资源里的应用图标（编号 1），还没打包图标时用系统默认图标
             tray_icon: LoadIconW(Some(hinst.into()), PCWSTR(1 as _)).or_else(|_| LoadIconW(None, IDI_APPLICATION)).unwrap_or_default(),
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
