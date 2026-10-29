@@ -7,10 +7,12 @@
 //! 参数：--data <目录> 代替 %APPDATA%\AuthTile；--top 置顶；--light / --dark 强制主题；--lang zh|tw|en 强制语言（后几个是截图走查用的）。
 
 mod config;
+mod fontload;
 mod gfx;
 mod launcher;
 mod menu;
 mod sys;
+mod theme;
 mod view;
 
 use std::path::PathBuf;
@@ -25,7 +27,7 @@ use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::{EM_SETSEL, WM_MOUSELEAVE};
@@ -37,7 +39,8 @@ use windows::core::*;
 
 use config::{Config, Lang, tr};
 use sys::wide;
-use view::{Fonts, Hit, Theme};
+use theme::Theme;
+use view::{Fonts, Hit};
 
 const CLASS: PCWSTR = w!("AuthTileMain");
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -258,38 +261,15 @@ impl App {
 
     fn load_theme(&mut self) {
         self.sys_dark = self.force_dark.unwrap_or_else(|| sys::reg_dword(w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), w!("AppsUseLightTheme")) != Some(1));
-        // 透明度低于 50% 时底色太薄，深色字在深色壁纸上看不清：不管系统主题，都用桌面图标那样的白字加阴影；同时关掉模糊，透出壁纸
+        // 透明度低于 50% 时底色太薄，深色字在深色壁纸上看不清：不管系统主题，都用桌面图标那样的白字加阴影
         let o = self.cfg.opacity.clamp(menu::OPACITY_MIN, 100) as f32 / 100.0;
         let dark = self.sys_dark || o < 0.5;
         self.theme = Theme::new(dark, o);
         unsafe {
             let d = BOOL::from(dark);
             let _ = DwmSetWindowAttribute(self.hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &d as *const _ as _, 4);
-            let corner = DWMWCP_ROUND;
+            let corner = DWMWCP_DONOTROUND;
             let _ = DwmSetWindowAttribute(self.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
-            // 系统亚克力（DWMSBT_TRANSIENTWINDOW）在窗口未激活时退成纯色，磁贴几乎总是未激活，
-            // 所以用 SetWindowCompositionAttribute 的亚克力模糊：未公开，但从 Win10 起一直可用（和 ClaudeTile、Nookery 一样）
-            #[repr(C)]
-            struct Accent {
-                state: u32,
-                flags: u32,
-                tint: u32,
-                anim: u32,
-            }
-            #[repr(C)]
-            struct Data {
-                attr: u32,
-                data: *mut Accent,
-                size: usize,
-            }
-            type Swca = unsafe extern "system" fn(HWND, *mut Data) -> BOOL;
-            if let Some(f) = GetProcAddress(GetModuleHandleW(w!("user32.dll")).unwrap_or_default(), s!("SetWindowCompositionAttribute")) {
-                let f: Swca = std::mem::transmute(f);
-                // 4 = ACCENT_ENABLE_ACRYLICBLURBEHIND；染色交给 D2D 画的底色
-                let mut accent = Accent { state: if o >= 0.5 { 4 } else { 0 }, flags: 0, tint: 0x01000000, anim: 0 };
-                let mut d = Data { attr: 19, data: &mut accent, size: size_of::<Accent>() };
-                let _ = f(self.hwnd, &mut d);
-            }
             // 改名框的配色
             let _ = DeleteObject(self.edit_brush.into());
             self.edit_brush = CreateSolidBrush(colorref(Theme::panel(dark).tint));
@@ -849,7 +829,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_CTLCOLOREDIT => {
                 let dc = HDC(wp.0 as _);
                 let th = Theme::panel(a.theme.dark);
-                SetTextColor(dc, colorref(th.text));
+                SetTextColor(dc, colorref(th.p.text));
                 SetBkColor(dc, colorref(th.tint));
                 return LRESULT(a.edit_brush.0 as isize);
             }

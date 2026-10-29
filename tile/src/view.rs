@@ -1,6 +1,7 @@
-//! 磁贴的排版和绘制。尺寸都是 DIP，绘制时由渲染目标按窗口 DPI 缩放。
+//! 磁贴的排版和绘制。尺寸都是 DIP，绘制时由渲染目标按窗口 DPI 缩放；颜色、字号、间距一律取自 theme.rs。
 //! 自上而下：标题行（名字、导入按钮、置顶按钮）、导入结果提示（几秒后消失）、验证码列表。高度随条目数变，放不下屏幕时列表滚动。
 //! 列表末尾是已隐藏验证码的展开按钮，展开后隐藏的一组变淡显示在按钮下面。
+//! 结构靠线：顶上一条粗线，行与行之间一条细线，行左边一条结构线（悬停时变强调色）；没有卡片、圆角和阴影。
 
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -9,16 +10,20 @@ use windows::core::*;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::config::tr;
+use crate::fontload::Bundled;
+use crate::theme::*;
 use crate::{App, Field};
 
-pub const PAD: f32 = 14.0;
 pub const MIN_W: f32 = 240.0;
-pub const HEAD: f32 = 46.0;
-pub const ROW: f32 = 54.0;
-const EMPTY: f32 = 112.0;
-const BOTTOM: f32 = 8.0;
+/// 标题行：顶上的粗线加 38 px 的标题
+pub const HEAD: f32 = 40.0;
+pub const ROW: f32 = 64.0;
+const EMPTY: f32 = 96.0;
+const BOTTOM: f32 = 0.0;
 /// 展开按钮那一行
-const MORE: f32 = 36.0;
+const MORE: f32 = 40.0;
+/// 标题栏右边每个按钮的宽
+const BTN: f32 = 28.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -90,73 +95,40 @@ pub fn layout(a: &App) -> Layout {
     lay
 }
 
-pub struct Theme {
-    pub dark: bool,
-    pub tint: D2D1_COLOR_F,
-    pub text: D2D1_COLOR_F,
-    pub muted: D2D1_COLOR_F,
-    pub faint: D2D1_COLOR_F,
-    pub track: D2D1_COLOR_F,
-    pub hover: D2D1_COLOR_F,
-    pub accent: D2D1_COLOR_F,
-    pub danger: D2D1_COLOR_F,
-    /// 底色太薄时文字压在壁纸上，加阴影（和桌面图标一样）
-    pub shadow: bool,
-}
-
-pub fn rgba(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r, g, b, a }
-}
-
-pub fn with_a(c: D2D1_COLOR_F, a: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { a: c.a * a, ..c }
-}
-
-impl Theme {
-    /// 磁贴的配色；opacity 是底色的不透明度（0.2～1）。灰阶和 ClaudeTile / Nookery 一致，强调色是本程序的青绿
-    pub fn new(dark: bool, opacity: f32) -> Theme {
-        let (bg, fg) = if dark { (0x20 as f32 / 255.0, 0xF3 as f32 / 255.0) } else { (0xF3 as f32 / 255.0, 0x1A as f32 / 255.0) };
-        let g = |a: f32| rgba(fg, fg, fg, a);
-        Theme {
-            dark,
-            tint: rgba(bg, bg, bg, opacity * if dark { 0.80 } else { 0.88 }),
-            shadow: opacity < 0.5,
-            text: g(1.0),
-            muted: g(if dark { 0.66 } else { 0.64 }),
-            faint: g(if dark { 0.09 } else { 0.08 }),
-            track: g(if dark { 0.14 } else { 0.12 }),
-            hover: g(0.07),
-            accent: if dark { rgba(0.243, 0.788, 0.725, 1.0) } else { rgba(0.047, 0.533, 0.486, 1.0) },
-            danger: if dark { rgba(0.957, 0.392, 0.341, 1.0) } else { rgba(0.769, 0.169, 0.110, 1.0) },
-        }
-    }
-
-    /// 右键菜单用的不透明面板：不跟磁贴的透明度走
-    pub fn panel(dark: bool) -> Theme {
-        let bg = if dark { 0x2C as f32 / 255.0 } else { 0xF9 as f32 / 255.0 };
-        Theme { tint: rgba(bg, bg, bg, 1.0), ..Theme::new(dark, 1.0) }
-    }
-}
-
 pub struct Fonts {
-    pub f11: IDWriteTextFormat,
-    pub f12: IDWriteTextFormat,
-    pub f12b: IDWriteTextFormat,
-    pub f14b: IDWriteTextFormat,
-    /// 验证码数字
+    /// 12：标签、副标题
+    pub l12: IDWriteTextFormat,
+    pub l12b: IDWriteTextFormat,
+    /// 13：正文、菜单；粗体用于账号名
+    pub b13: IDWriteTextFormat,
+    pub b13b: IDWriteTextFormat,
+    /// 16 粗：标题、“已复制”
+    pub s16b: IDWriteTextFormat,
+    /// 24 粗：验证码（Heros 的数字等宽）
     pub code: IDWriteTextFormat,
     pub icon: IDWriteTextFormat,
-    pub icon_big: IDWriteTextFormat,
     /// 12 号、可换行，提示条用
-    pub f12w: IDWriteTextFormat,
-    /// 编辑框用的 GDI 字体（12 号）
+    pub wrap: IDWriteTextFormat,
+    /// 编辑框用的 GDI 字体（13 粗，和被盖住的账号名一样）
     pub edit: windows::Win32::Graphics::Gdi::HFONT,
 }
 
 impl Fonts {
     pub fn new(dw: &IDWriteFactory, dpi: u32) -> Fonts {
-        let mk = |fam: PCWSTR, size: f32, weight: DWRITE_FONT_WEIGHT| unsafe {
-            let f = dw.CreateTextFormat(fam, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, crate::config::locale()).expect("创建字体失败");
+        let bundled = Bundled::load(dw);
+        // 字体文件缺了就退回 Arial，不报错；汉字落到界面语言对应的系统黑体
+        let (family, coll) = match &bundled.latin {
+            Some(c) => (FONT_LATIN, Some(c)),
+            None => (FONT_LATIN_FALLBACK, None),
+        };
+        let mk = |fam: &str, coll: Option<&IDWriteFontCollection>, size: f32, weight: DWRITE_FONT_WEIGHT| unsafe {
+            let name: Vec<u16> = fam.encode_utf16().chain([0]).collect();
+            let f = dw.CreateTextFormat(PCWSTR(name.as_ptr()), coll, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, crate::config::locale()).expect("创建字体失败");
+            if let Some(fb) = &bundled.fallback
+                && let Ok(f1) = f.cast::<IDWriteTextFormat1>()
+            {
+                let _ = f1.SetFontFallback(fb);
+            }
             let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             let trim = DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 };
@@ -165,37 +137,42 @@ impl Fonts {
             }
             f
         };
-        let text = w!("Segoe UI Variable Text");
+        let (reg, bold) = (DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_BOLD);
         // Win11 的图标字体是 Segoe Fluent Icons，Win10 只有 Segoe MDL2 Assets，两者用到的码位相同
         let icon_fam = unsafe {
-            let mut coll = None;
-            let _ = dw.GetSystemFontCollection(&mut coll, false);
+            let mut sys = None;
+            let _ = dw.GetSystemFontCollection(&mut sys, false);
             let (mut idx, mut found) = (0u32, BOOL(0));
-            if let Some(c) = coll {
-                let _ = c.FindFamilyName(w!("Segoe Fluent Icons"), &mut idx, &mut found);
+            let name: Vec<u16> = FONT_ICON.encode_utf16().chain([0]).collect();
+            if let Some(c) = sys {
+                let _ = c.FindFamilyName(PCWSTR(name.as_ptr()), &mut idx, &mut found);
             }
-            if found.as_bool() { w!("Segoe Fluent Icons") } else { w!("Segoe MDL2 Assets") }
+            if found.as_bool() { FONT_ICON } else { FONT_ICON_OLD }
         };
         // 12 号、可换行、顶对齐，提示条用
-        let f12w = mk(text, 12.0, DWRITE_FONT_WEIGHT_NORMAL);
+        let wrap = mk(family, coll, S_LABEL, reg);
         unsafe {
-            let _ = f12w.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            let _ = f12w.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            let _ = wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            let _ = wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            // 折行的文字不要省略号（整段都显示，高度由 measure 算出）
+            let _ = wrap.SetTrimming(&DWRITE_TRIMMING::default(), None);
         }
         let edit = unsafe {
             use windows::Win32::Graphics::Gdi::*;
-            let h = -(12.0 * dpi as f32 / 72.0) as i32;
-            CreateFontW(h, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH.0 as u32, w!("Segoe UI Variable Text"))
+            let h = -(S_BODY * dpi as f32 / 96.0).round() as i32;
+            let face: Vec<u16> = (if bundled.gdi { FONT_LATIN_GDI } else { FONT_LATIN_FALLBACK }).encode_utf16().chain([0]).collect();
+            CreateFontW(h, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH.0 as u32, PCWSTR(face.as_ptr()))
         };
+        // 繁体界面的汉字用正黑体、简体用雅黑：fontload 的后备链按当前语言建，语言切换时 Fonts 重建
         Fonts {
-            f11: mk(text, 11.0, DWRITE_FONT_WEIGHT_NORMAL),
-            f12: mk(text, 12.0, DWRITE_FONT_WEIGHT_NORMAL),
-            f12b: mk(text, 12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD),
-            f14b: mk(text, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD),
-            code: mk(w!("Segoe UI Variable Display"), 22.0, DWRITE_FONT_WEIGHT_SEMI_BOLD),
-            icon: mk(icon_fam, 14.0, DWRITE_FONT_WEIGHT_NORMAL),
-            icon_big: mk(icon_fam, 28.0, DWRITE_FONT_WEIGHT_NORMAL),
-            f12w,
+            l12: mk(family, coll, S_LABEL, reg),
+            l12b: mk(family, coll, S_LABEL, bold),
+            b13: mk(family, coll, S_BODY, reg),
+            b13b: mk(family, coll, S_BODY, bold),
+            s16b: mk(family, coll, S_SECTION, bold),
+            code: mk(family, coll, S_DISPLAY, bold),
+            icon: mk(icon_fam, None, S_ICON, reg),
+            wrap,
             edit,
         }
     }
@@ -236,28 +213,32 @@ impl P<'_> {
         unsafe { self.br.SetColor(&c) };
     }
 
-    pub fn fill(&self, r: D2D_RECT_F, radius: f32, c: D2D1_COLOR_F) {
+    /// 方角填充（线、底色块都用它）
+    pub fn fill(&self, r: D2D_RECT_F, c: D2D1_COLOR_F) {
         self.color(c);
-        unsafe { self.dc.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }, self.br) };
+        unsafe { self.dc.FillRectangle(&r, self.br) };
     }
 
-    pub fn dot(&self, x: f32, y: f32, r: f32, c: D2D1_COLOR_F) {
-        self.color(c);
-        unsafe { self.dc.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x, Y: y }, radiusX: r, radiusY: r }, self.br) };
+    /// 方角描边，线画在矩形里面
+    pub fn outline(&self, r: D2D_RECT_F, w: f32, c: D2D1_COLOR_F) {
+        self.fill(rect(r.left, r.top, r.right, r.top + w), c);
+        self.fill(rect(r.left, r.bottom - w, r.right, r.bottom), c);
+        self.fill(rect(r.left, r.top + w, r.left + w, r.bottom - w), c);
+        self.fill(rect(r.right - w, r.top + w, r.right, r.bottom - w), c);
     }
 
-    /// 倒计时圆环：灰色底圈，上面从 12 点顺时针画剩余的比例
+    /// 倒计时圆环：底圈，上面从 12 点顺时针画剩余的比例
     pub fn ring(&self, cx: f32, cy: f32, r: f32, frac: f32, track: D2D1_COLOR_F, c: D2D1_COLOR_F) {
         unsafe {
             self.color(track);
-            self.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r, radiusY: r }, self.br, 2.5, None);
+            self.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r, radiusY: r }, self.br, RING_W, None);
             let frac = frac.clamp(0.0, 1.0);
             if frac <= 0.0 {
                 return;
             }
             if frac >= 0.999 {
                 self.color(c);
-                self.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r, radiusY: r }, self.br, 2.5, None);
+                self.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: r, radiusY: r }, self.br, RING_W, None);
                 return;
             }
             let Ok(path) = self.d2d.CreatePathGeometry() else { return };
@@ -274,7 +255,7 @@ impl P<'_> {
             sink.EndFigure(D2D1_FIGURE_END_OPEN);
             let _ = sink.Close();
             self.color(c);
-            self.dc.DrawGeometry(&path, self.br, 2.5, None);
+            self.dc.DrawGeometry(&path, self.br, RING_W, None);
         }
     }
 
@@ -323,52 +304,54 @@ pub struct Frame {
     pub hits: Vec<(D2D_RECT_F, Hit)>,
 }
 
-/// 行顶为 y 的一行在列表里的矩形
+/// 行顶为 y 的一行在列表里的矩形（不含底下的细线）
 pub fn row_rect(y: f32, w: f32) -> D2D_RECT_F {
-    rect(PAD - 6.0, y, w - PAD + 6.0, y + ROW - 2.0)
+    rect(0.0, y, w, y + ROW - HAIR)
 }
 
 /// 改名框放在行顶为 y 的那一行的名字处（客户区 DIP）
 pub fn label_rect(a: &App, y: f32, w: f32) -> D2D_RECT_F {
     let top = a.list.0 + y - a.scroll;
-    rect(PAD, top + 7.0, w - PAD - 120.0, top + 29.0)
+    rect(PAD, top + 3.0 * U, w - PAD - 2.0 * RING_R - 5.0 * U, top + 3.0 * U + 20.0)
 }
 
 /// 画整块磁贴；max_h 是窗口能有的最大高度（工作区高）
 pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
     let p = P { dc: &a.gfx.dc, br: &a.gfx.brush, dw: &a.dw, d2d: &a.d2d, shadow: a.theme.shadow };
     let (th, f) = (&a.theme, &a.fonts);
+    let c = &th.p;
     let mut hits = Vec::new();
     let (l, r) = (PAD, w - PAD);
     unsafe {
         p.dc.Clear(Some(&rgba(0.0, 0.0, 0.0, 0.0)));
-        p.fill(rect(0.0, 0.0, w, h), 0.0, th.tint);
     }
+    p.fill(rect(0.0, 0.0, w, h), th.tint);
 
-    // 标题行：名字，右边是导入、置顶两个按钮
-    let y = 11.0;
-    p.text("Authenticator", rect(l, y, r - 60.0, y + 24.0), &f.f14b, th.text, Align::L);
+    // 标题行：顶上一条粗线，名字，右边是导入、置顶两个按钮
+    p.fill(rect(0.0, 0.0, w, RULE), c.text);
+    p.text("Authenticator", rect(l, RULE, r - 2.0 * BTN, HEAD - HAIR), &f.s16b, c.text, Align::L);
     // Segoe Fluent Icons：E710 加号，E718 图钉，E840 按下的图钉
-    let buttons = [(Hit::Import, "\u{E710}", th.muted), (Hit::Pin, if a.cfg.topmost { "\u{E840}" } else { "\u{E718}" }, if a.cfg.topmost { th.accent } else { th.muted })];
-    for (k, (hit, glyph, c)) in buttons.into_iter().enumerate() {
-        let b = rect(r - 52.0 + k as f32 * 28.0, y, r - 24.0 + k as f32 * 28.0 + 4.0, y + 24.0);
-        if a.hover == Some(hit) {
-            p.fill(b, 5.0, th.hover);
+    let buttons = [(Hit::Import, "\u{E710}", c.muted), (Hit::Pin, if a.cfg.topmost { "\u{E840}" } else { "\u{E718}" }, if a.cfg.topmost { c.accent } else { c.muted })];
+    for (k, (hit, glyph, col)) in buttons.into_iter().enumerate() {
+        let b = rect(r - 2.0 * BTN + k as f32 * BTN, RULE, r - BTN + k as f32 * BTN, HEAD - HAIR);
+        let hot = a.hover == Some(hit);
+        if hot {
+            p.fill(b, th.surface());
         }
-        p.text(glyph, b, &f.icon, c, Align::C);
+        p.text(glyph, b, &f.icon, if hot && hit == Hit::Import { c.accent } else if hot { c.text } else { col }, Align::C);
         hits.push((b, hit));
     }
+    p.fill(rect(0.0, HEAD - HAIR, w, HEAD), c.border);
     let mut top = HEAD;
 
-    // 导入结果、出错提示；长的折行
+    // 导入结果、出错提示：左边一条结构线（出错是红色），长的折行
     if let Some((msg, err)) = a.note() {
-        let nh = p.measure(msg, r - l - 24.0, &f.f12w).max(16.0) + 10.0;
-        let b = rect(l - 6.0, top, r + 6.0, top + nh);
-        p.fill(b, 6.0, if err { with_a(th.danger, 0.16) } else { th.faint });
-        // E946 信息，E7BA 警告；图标对齐第一行
-        p.text(if err { "\u{E7BA}" } else { "\u{E946}" }, rect(l, b.top + 5.0, l + 16.0, b.top + 21.0), &f.icon, if err { th.danger } else { th.accent }, Align::C);
-        p.text(msg, rect(l + 24.0, b.top + 5.0, r, b.bottom - 5.0), &f.f12w, th.text, Align::L);
-        top += nh + 6.0;
+        let nh = p.measure(msg, r - l, &f.wrap).max(16.0) + 3.0 * U;
+        p.fill(rect(0.0, top, w, top + nh), th.surface());
+        p.fill(rect(0.0, top, BAR, top + nh), if err { c.red } else { c.accent });
+        p.text(msg, rect(l, top + 1.5 * U, r, top + nh - 1.5 * U), &f.wrap, c.text, Align::L);
+        p.fill(rect(0.0, top + nh - HAIR, w, top + nh), c.border);
+        top += nh;
     }
 
     let entries = &a.vault.entries;
@@ -377,11 +360,12 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
         return Frame { h: top + BOTTOM, list: (top, 0.0, 0.0), hits };
     }
     if entries.is_empty() {
-        p.text("\u{ED14}", rect(l, top + 6.0, r, top + 46.0), &f.icon_big, th.muted, Align::C);
-        p.text(tr("把验证器导出的二维码图片拖到这里", "把驗證器匯出的 QR 碼圖片拖到這裡", "Drop exported QR code images here"), rect(l, top + 52.0, r, top + 72.0), &f.f12, th.text, Align::C);
-        p.text(tr("或点 + 选择图片、Ctrl+V 粘贴截图", "或按 + 選擇圖片、Ctrl+V 貼上截圖", "or click + to pick, Ctrl+V to paste"), rect(l, top + 74.0, r, top + 92.0), &f.f11, th.muted, Align::C);
-        let total = top + EMPTY;
-        return Frame { h: total, list: (top, 0.0, 0.0), hits };
+        // 一行说明，下一步是一个文字链接；靠左、贴着内容顶
+        p.text(tr("把验证器导出的二维码图片拖到这里", "把驗證器匯出的 QR 碼圖片拖到這裡", "Drop exported QR code images here"), rect(l, top + 4.0 * U, r, top + 9.0 * U), &f.b13, c.text, Align::L);
+        let lw = p.text(tr("导入二维码图片 →", "匯入 QR 碼圖片 →", "Import QR images →"), rect(l, top + 10.0 * U, r, top + 15.0 * U), &f.b13b, if a.hover == Some(Hit::Import) { c.text } else { c.accent }, Align::L);
+        hits.push((rect(l, top + 10.0 * U, l + lw, top + 15.0 * U), Hit::Import));
+        p.text(tr("或按 Ctrl+V 粘贴截图", "或按 Ctrl+V 貼上截圖", "or press Ctrl+V to paste a screenshot"), rect(l, top + 15.0 * U, r, top + 20.0 * U), &f.l12, c.muted, Align::L);
+        return Frame { h: top + EMPTY, list: (top, 0.0, 0.0), hits };
     }
 
     // 验证码列表：放不下时裁剪并按 a.scroll 滚动
@@ -398,55 +382,67 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
         p.dc.PushAxisAlignedClip(&rect(0.0, top, w, top + vis), D2D1_ANTIALIAS_MODE_ALIASED);
         p.dc.SetTransform(&Matrix3x2::translation(0.0, top - a.scroll));
     }
-    let cx = r - 9.0;
+    let ring_cx = r - RING_R;
+    // 验证码右边缘：圆环左边留 12
+    let code_end = ring_cx - RING_R - 3.0 * U;
     if let Some((y, n)) = lay.more {
-        let b = rect(PAD - 6.0, y + 3.0, w - PAD + 6.0, y + MORE - 5.0);
-        if a.hover == Some(Hit::More) {
-            p.fill(b, 6.0, th.hover);
+        let b = rect(0.0, y, w, y + MORE);
+        let hot = a.hover == Some(Hit::More);
+        if hot {
+            p.fill(rect(0.0, y + RULE, w, y + MORE - HAIR), th.surface());
         }
-        let s = if a.expanded { tr("收起", "收合", "Collapse").to_string() } else { tr("显示 {0} 个已隐藏", "顯示 {0} 個已隱藏", "Show {0} hidden").replace("{0}", &n.to_string()) };
-        p.text(&s, rect(l, b.top, cx - 18.0, b.bottom), &f.f12, th.muted, Align::L);
-        // E70E 向上、E70D 向下的箭头，和倒计时圆环对齐
-        p.text(if a.expanded { "\u{E70E}" } else { "\u{E70D}" }, rect(cx - 10.0, b.top, cx + 10.0, b.bottom), &f.icon, th.muted, Align::C);
+        // 展开按钮是下一小节的开头：一条粗线，hover 时左边的结构线变强调色
+        p.fill(rect(0.0, y, w, y + RULE), c.text);
+        p.fill(rect(0.0, y + RULE, BAR, y + MORE - HAIR), if hot { c.accent } else { c.border });
+        let s = if a.expanded { tr("收起已隐藏 ↑", "收合已隱藏 ↑", "Collapse hidden ↑").to_string() } else { tr("显示 {0} 个已隐藏 ↓", "顯示 {0} 個已隱藏 ↓", "Show {0} hidden ↓").replace("{0}", &n.to_string()) };
+        p.text(&s, rect(l, y + RULE, r, y + MORE - HAIR), &f.b13b, if hot { c.text } else { c.muted }, Align::L);
+        p.fill(rect(0.0, y + MORE - HAIR, w, y + MORE), c.border);
         hit(b, Hit::More);
     }
     for &(i, ry) in &lay.rows {
         let e = &entries[i];
         let rr = row_rect(ry, w);
-        if a.drag.as_ref().is_some_and(|d| d.id == e.id) {
+        // 选中（拿起的行、右键菜单对着的行）反色；悬停用 surface 并让左边的结构线变强调色
+        let picked = a.drag.as_ref().is_some_and(|d| d.id == e.id);
+        let selected = picked || a.menu_for == Some(e.id);
+        let hot = a.hover == Some(Hit::Row(e.id)) || a.hover == Some(Hit::Login(e.id));
+        let pal = if selected { th.on_selected() } else { *c };
+        if picked {
             // 拿起的行盖在别的行上面：先铺不透明的底色
-            p.fill(rr, 6.0, D2D1_COLOR_F { a: 1.0, ..th.tint });
-            p.fill(rr, 6.0, th.track);
-        } else if a.hover == Some(Hit::Row(e.id)) || a.menu_for == Some(e.id) {
-            p.fill(rr, 6.0, th.hover);
+            p.fill(rr, D2D1_COLOR_F { a: 1.0, ..c.bg });
         }
-        // 已隐藏的一组变淡
-        let dim = |c: D2D1_COLOR_F| if e.hidden { with_a(c, 0.5) } else { c };
+        if selected {
+            p.fill(rr, th.selected());
+        } else if hot {
+            p.fill(rr, th.surface());
+        }
+        p.fill(rect(0.0, ry, BAR, ry + ROW - HAIR), if selected { pal.accent } else if hot { c.accent } else { c.border });
+        p.fill(rect(0.0, ry + ROW - HAIR, w, ry + ROW), c.border);
+        // 已隐藏的一组退到 muted 色（对比度仍在 4.5:1 以上），不用半透明
+        let dim = |col: D2D1_COLOR_F| if e.hidden { pal.muted } else { col };
         let left = e.otp.remaining(now);
-        // 最后 5 秒变红，和手机上的验证器一样提醒快换码了
+        // 最后 5 秒变红（圆环和验证码），和手机上的验证器一样提醒快换码了；圆环里的数字说明剩几秒，不只靠颜色
         let urgent = left <= 5;
-        p.ring(cx, ry + ROW / 2.0 - 1.0, 8.0, left as f32 / e.otp.period as f32, dim(th.track), dim(if urgent { th.danger } else { th.accent }));
-        // 开了登录按钮的，按钮放在验证码和圆环之间（E7FC 手柄）
-        let code_end = if e.login { cx - 46.0 } else { cx - 18.0 };
+        let state = if urgent { pal.red } else { pal.accent };
+        let cy = ry + (ROW - HAIR) / 2.0;
+        p.ring(ring_cx, cy, RING_R - RING_W / 2.0, left as f32 / e.otp.period as f32, with_a(pal.muted, 0.35), state);
+        p.text(&left.to_string(), rect(ring_cx - RING_R, cy - RING_R, ring_cx + RING_R, cy + RING_R), &f.l12b, if urgent { pal.red } else { pal.muted }, Align::C);
+        // 开了登录按钮的，文字按钮放在验证码下面，和验证码右对齐
+        let code_r = if e.login { rect(l, ry + U, code_end, ry + ROW - 4.0 * U) } else { rect(l, ry, code_end, ry + ROW - HAIR) };
         if e.login {
-            let b = rect(cx - 44.0, ry + 12.0, cx - 16.0, ry + 40.0);
-            if a.hover == Some(Hit::Login(e.id)) {
-                p.fill(b, 5.0, th.hover);
-            }
-            p.text("\u{E7FC}", b, &f.icon, dim(th.accent), Align::C);
-            hit(b, Hit::Login(e.id));
+            let b = rect(code_end - 72.0, ry + ROW - 5.0 * U, code_end, ry + ROW - U);
+            let on = a.hover == Some(Hit::Login(e.id));
+            // 箭头在悬停时右移 2 px
+            p.text(tr("登录 →", "登入 →", "Sign in →"), rect(b.left + if on { 2.0 } else { 0.0 }, b.top, b.right + if on { 2.0 } else { 0.0 }, b.bottom), &f.l12b, dim(if on && !selected { pal.text } else { pal.accent }), Align::R);
+            hit(rect(b.left, b.top - U, b.right + 2.0, b.bottom + U), Hit::Login(e.id));
         }
-        let code_r = rect(l, ry, code_end, ry + ROW - 2.0);
         let cw = if a.copied == Some(e.id) {
-            p.text(tr("已复制", "已複製", "Copied"), code_r, &f.f12b, th.accent, Align::R)
+            p.text(tr("已复制", "已複製", "Copied"), code_r, &f.s16b, pal.accent, Align::R)
         } else {
-            p.text(&split_code(&e.otp.code(now)), code_r, &f.code, dim(if urgent { th.danger } else { th.text }), Align::R)
+            p.text(&split_code(&e.otp.code(now)), code_r, &f.code, dim(if urgent { pal.red } else { pal.text }), Align::R)
         };
-        let lr = (code_end - cw - 12.0).max(l + 40.0);
+        let lr = (code_end - cw - 3.0 * U).max(l + 40.0);
         let editing = a.editing.filter(|&(id, _)| id == e.id).map(|(_, f)| f);
-        if editing.is_none() {
-            p.text(&e.label, rect(l, ry + 7.0, lr, ry + 29.0), &f.f12b, dim(th.text), Align::L);
-        }
         // 填登录账号、密码时，名字下面一行提示在填什么
         let sub = match editing {
             Some(Field::User) => tr("输入游戏账号，回车下一步", "輸入遊戲帳號，Enter 下一步", "Game ID, Enter for next").to_string(),
@@ -456,7 +452,12 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32, now: u64) -> Frame {
             _ => format!("{} · {}", e.issuer, e.name),
         };
         let sub = if sub == e.label { String::new() } else { sub };
-        p.text(&sub, rect(l, ry + 27.0, lr, ry + 45.0), &f.f11, dim(th.muted), Align::L);
+        // 有副标题时名字在上、副标题在下，两行合起来对着行的中线；没有时名字对中线
+        let nt = if sub.is_empty() { ry + (ROW - HAIR) / 2.0 - 10.0 } else { ry + 3.0 * U };
+        if editing.is_none() {
+            p.text(&e.label, rect(l, nt, lr, nt + 20.0), &f.b13b, dim(pal.text), Align::L);
+        }
+        p.text(&sub, rect(l, ry + 3.0 * U + 20.0, lr, ry + 3.0 * U + 38.0), &f.l12, dim(pal.muted), Align::L);
         hit(rr, Hit::Row(e.id));
     }
     unsafe {

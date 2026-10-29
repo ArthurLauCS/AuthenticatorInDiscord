@@ -4,9 +4,10 @@
 
 Windows 桌面磁贴，实时显示 Google 验证器（Google Authenticator）的验证码。导入 Google 验证器导出的二维码，每个账号一行，显示当前验证码和倒计时环。
 
-- 单个约 1.2 MB 的 exe。私有内存约 6 MB；Windows 把输入法载入进程后约 40 MB。
+- 单个约 1.3 MB 的 exe（带字体的安装包约 2.7 MB）。私有内存约 6.5 MB；Windows 把输入法载入进程后约 40 MB。
 - 跟随系统浅色 / 深色主题；透明度可调，最低可以几乎透明。
 - 简体中文、繁体中文、英文界面。
+- 瑞士风格、以字为主：方角、线分隔的行，验证码用 TeX Gyre Heros 粗体放大；汉字简体界面用微软雅黑 UI，繁体界面用微软正黑体 UI。
 
 ## 安装
 
@@ -14,6 +15,7 @@ Windows 桌面磁贴，实时显示 Google 验证器（Google Authenticator）�
 
 - 安装包没有商业代码签名证书，Windows 可能提示“Windows 已保护你的电脑”，点**更多信息** → **仍要运行**。
 - 只为当前用户安装，不需要管理员权限。
+- 带一款开源字体 TeX Gyre Heros（GUST Font License，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)），放在 exe 旁的 `fonts` 文件夹。该文件夹缺失时磁贴退回 Arial。
 - 安装时选的语言就是界面语言，之后可以在菜单里改。
 
 ## 导入账号
@@ -69,13 +71,15 @@ Windows 桌面磁贴，实时显示 Google 验证器（Google Authenticator）�
 需要 Rust（stable，MSVC 工具链）。
 
 ```powershell
+powershell -File scripts\fonts.ps1       # 只需一次：把字体下载到 tile\assets\fonts（不进 git）
 cargo test --workspace                  # TOTP、二维码识别、导入去重、设置
 cargo build --release -p authtile       # target\release\authtile.exe
 ```
 
 - `core`（crate 名 `authcore`）是不带界面的引擎：RFC 6238 的 TOTP（SHA-1 / SHA-256 / SHA-512，6 或 8 位）、二维码识别、`otpauth://` 和 `otpauth-migration://` 解析、账号列表和导入去重。
-- `tile` 是 Windows 程序：Direct2D 画在 DirectComposition 交换链上，亚克力背景。`tile\src\launcher.rs` 读写 Lost Ark 启动器内嵌 IE 控件里网页的 DOM，完成登录。
-- `scripts\installer.ps1` 把安装包打到 `target\installer`（需要 [Inno Setup 6](https://jrsoftware.org/isinfo.php)），只保留当前版本的安装包。
+- `tile` 是 Windows 程序：Direct2D 画在 DirectComposition 交换链上，半透明背景。颜色、字号、字体名都在 `tile\src\theme.rs`；`tile\src\fontload.rs` 把自带字体载入为 DirectWrite 字体集合。exe 先找旁边的 `fonts` 文件夹，再找往上两级的 `tile\assets\fonts`（开发布局）。`tile\src\launcher.rs` 读写 Lost Ark 启动器内嵌 IE 控件里网页的 DOM，完成登录。
+- `scripts\fonts.ps1` 从 GUST e-foundry 下载 TeX Gyre Heros（固定网址和 SHA-256）。
+- `scripts\installer.ps1` 先运行 `fonts.ps1`，再把安装包打到 `target\installer`（需要 [Inno Setup 6](https://jrsoftware.org/isinfo.php)），只保留当前版本的安装包。
 - `scripts\icon.py` 把 `tile\assets\icon.svg` / `icon-small.svg` 渲染成 `app.ico` 和 `app.res`（需要装了 Pillow 的 Python 和 Google Chrome）。
 - `cargo run -p authcore --example mkqr -- out.png "发行方|账号|BASE32密钥"` 生成假账号的测试二维码。
 
